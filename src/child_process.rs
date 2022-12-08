@@ -40,6 +40,33 @@ extern {
     #[wasm_bindgen(method, getter)]
     pub fn stdin(this: &ChildProcess) -> WritableStream;//stream::Writable;
 
+    #[wasm_bindgen(method)]
+    pub fn kill(this: &ChildProcess)->bool;
+
+    #[wasm_bindgen(method, js_name=kill)]
+    fn kill_with_signal_impl(this: &ChildProcess, signal:JsValue)->bool;
+}
+
+pub enum KillSignal{
+    None,
+    Message(String),
+    Code(u32)
+}
+
+impl ChildProcess{
+    pub fn kill_with_signal(self: &ChildProcess, signal:KillSignal)->bool{
+        match signal{
+            KillSignal::None=>{
+                self.kill()
+            }
+            KillSignal::Message(str)=>{
+                self.kill_with_signal_impl(JsValue::from(str))
+            }
+            KillSignal::Code(code)=>{
+                self.kill_with_signal_impl(JsValue::from(code))
+            }
+        }
+    }
 }
 
 impl From<Vec<&str>> for SpawnArgs{
@@ -64,13 +91,14 @@ impl From<Vec<&str>> for SpawnArgs{
 impl SpawnOptions {
     /// "Construct a new `SpawnOptions`.
     ///
+    /// [NODEJS Documentation](https://nodejs.org/api/child_process.html#child_processspawncommand-args-options)
     pub fn new() -> Self {
         #[allow(unused_mut)]
         let mut ret: Self = ::wasm_bindgen::JsCast::unchecked_into(Object::new());
         ret
     }
 
-    fn set(self, key:&str, value:JsValue) -> Self{
+    pub fn set(self, key:&str, value:JsValue) -> Self{
         let r = ::js_sys::Reflect::set(
             self.as_ref(),
             &JsValue::from(key),
@@ -92,15 +120,54 @@ impl SpawnOptions {
         self.set("env", JsValue::from(env))
     }
 
-    pub fn encoding(self, encoding:&str)->Self{
-        self.set("encoding", JsValue::from(encoding))
+    pub fn argv0(self, argv0:&str)->Self{
+        self.set("argv0", JsValue::from(argv0))
+    }
+
+    pub fn detached(self, detached:bool)->Self{
+        self.set("detached", JsValue::from(detached))
+    }
+
+    pub fn uid(self, uid:&str)->Self{
+        self.set("uid", JsValue::from(uid))
+    }
+
+    pub fn gid(self, gid:&str)->Self{
+        self.set("gid", JsValue::from(gid))
+    }
+
+    pub fn serialization(self, serialization:&str)->Self{
+        self.set("serialization", JsValue::from(serialization))
+    }
+
+    pub fn shell(self, shell:bool)->Self{
+        self.set("shell", JsValue::from(shell))
+    }
+
+    pub fn shell_str(self, shell:&str)->Self{
+        self.set("shell", JsValue::from(shell))
+    }
+
+    pub fn windows_verbatim_arguments(self, args:bool)->Self{
+        self.set("windowsVerbatimArguments", JsValue::from(args))
+    }
+
+    pub fn windows_hide(self, windows_hide:bool)->Self{
+        self.set("windowsHide", JsValue::from(windows_hide))
     }
 
     pub fn timeout(self, timeout:u32)->Self{
         self.set("timeout", JsValue::from(timeout))
     }
 
-    pub fn max_buffer(self, max_buffer:u32)->Self{
-        self.set("maxBuffer", JsValue::from(max_buffer))
+    //TODO: AbortSignal
+
+    pub fn kill_signal(self, signal:u32)->Self{
+        self.set("killSignal", JsValue::from(signal))
     }
+
+    pub fn kill_signal_str(self, signal:&str)->Self{
+        self.set("killSignal", JsValue::from(signal))
+    }
+    
 }
