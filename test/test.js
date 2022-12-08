@@ -6,3 +6,22 @@ let v = node_process.add(1,2);
 console.log("v:",v);
 node_process.test();
 
+/*
+let {spawn} = require("node:child_process")
+let cp = spawn("ls");
+cp.stdout.on("data", (data)=>{
+    console.log("data:", data+"")
+})
+cp.stderr.on("data", (data)=>{
+    console.log("error:", data)
+})
+
+cp.on("disconnect", (data)=>{
+    console.log("disconnect:", data)
+})
+*/
+
+//setTimeout(()=>{
+    //console.log("timeout");
+//}, 5000)
+
