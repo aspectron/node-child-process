@@ -1,0 +1,6 @@
+# wasm-pack build --target nodejs --out-name workflow --out-dir workflow
+./build-node
+if [ $? -ne 0 ]; then
+    echo "\nbuild failure 😱 ...\n" && exit 1
+fi
+node test.js
