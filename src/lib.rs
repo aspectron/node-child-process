@@ -1,10 +1,21 @@
+mod task;
+mod error;
+mod result;
+
+
+use std::future::Future;
+use std::sync::Arc;
+use std::time::Duration;
+
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use node_sys::*;
 use workflow_log::*;
 pub mod child_process;
 pub use child_process::{spawn, spawn_with_args, spawn_with_args_and_options};
-
+use workflow_wasm::callback::*;
+// use workflow_core::channel::oneshot;
+use workflow_core::channel::*;
 #[wasm_bindgen]
 extern "C" {
     #[wasm_bindgen]
@@ -16,8 +27,18 @@ pub fn add(left: usize, right: usize) -> usize {
     left + right
 }
 
+
+pub struct TaskInner {
+    pub terminate_send : Sender<()>,
+    pub terminate_complete : Receiver<()>,
+    // pub closure : 
+}
+
+
 #[wasm_bindgen]
-pub fn test() {
+pub async fn test() {
+
+
 
     log_info!("running rust test() fn");
     //log_info!("process.pid:{:?}", process.pid());
@@ -36,18 +57,30 @@ pub fn test() {
 
     //log_info!("spawn('ls'): {:#?}", cp);
 
-    let close_callback = Closure::<dyn Fn(buffer::Buffer)>::new(move |data:buffer::Buffer|{
+    // let close_callback = Closure::<dyn Fn(buffer::Buffer)>::new(move |data:buffer::Buffer|{
+    //     log_info!("close: {}", data.to_string(None, None, None));
+    // });
+    // let data_callback = Closure::<dyn Fn(buffer::Buffer)>::new(move |data:buffer::Buffer|{
+    //     log_info!("data: {}", data.to_string(None, None, None));
+    // });
+
+    let (sender,receiver) = oneshot();
+
+    // cp.on("close", close_callback.as_ref().unchecked_ref());
+    let close = callback!(move |data:buffer::Buffer|{
         log_info!("close: {}", data.to_string(None, None, None));
+        sender.try_send(()).expect("unable to send close notification");
     });
-    let data_callback = Closure::<dyn Fn(buffer::Buffer)>::new(move |data:buffer::Buffer|{
+    cp.on("close", close.as_ref());
+    // cp.stdout().on("data", data_callback.as_ref().unchecked_ref());
+    let data = callback!(move |data:buffer::Buffer|{
         log_info!("data: {}", data.to_string(None, None, None));
     });
+    cp.stdout().on("data", data.as_ref());
 
-    cp.on("close", close_callback.as_ref().unchecked_ref());
-    cp.stdout().on("data", data_callback.as_ref().unchecked_ref());
-
-    close_callback.forget();
-    data_callback.forget();
+    receiver.recv().await.expect("error receiving close notification");
+    // close_callback.forget();
+    // data_callback.forget();
 
     //let p = require("process");
     //log_info!("process: {:?}", p);

@@ -10,4 +10,8 @@ crate-type = ["cdylib"]
 node-sys = "0.4.2"
 js-sys = "*"
 wasm-bindgen = "0.2.83"
+wasm-bindgen-futures = "*"
 workflow-log = "*"
+workflow-wasm = { path = "../workflow-rs/workflow-wasm" }
+workflow-core = { path = "../workflow-rs/workflow-core" }
+thiserror = "1.0.38"
