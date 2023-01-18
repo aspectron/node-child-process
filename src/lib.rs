@@ -36,6 +36,7 @@ pub fn add(left: usize, right: usize) -> usize {
 #[wasm_bindgen]
 pub async fn test() {
     log_info!("running rust test() fn");
+    // workflow_wasm::panic::init_console_panic_hook();
     //log_info!("process.pid:{:?}", process.pid());
     //let id = process.get_uid();
     //log_info!("process.get_gid(): id:{}, {:?}", id, process.get_gid());
@@ -43,7 +44,7 @@ pub async fn test() {
 
     let proc = Process::new(&["ls","-m","-s"]);
 
-    
+
     proc.run();
 
 

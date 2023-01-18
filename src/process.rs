@@ -51,7 +51,8 @@ struct Inner {
     delay: AtomicU64,
     // pid: AtomicU64,
     stdout: Channel<String>,
-    exit: Channel<(u32, String)>,
+    // exit: Channel<(u32, String)>,
+    exit: Channel<u32>,
     proc: Arc<Mutex<Option<ChildProcess>>>,
     callbacks: CallbackMap,
 }
@@ -126,14 +127,15 @@ impl Inner {
             log_info!("cp ready");
 
             let exit = self.exit.sender.clone();
-            let close = callback!(move |code: u32, signal: String| {
+            // let close = callback!(move |code: u32, signal: String| {
+            let close = callback!(move |code: u32| {
                 log_info!("close callback()...");
 
-                exit.try_send((code, signal))
+                exit.try_send(code)
                     .expect("unable to send close notification");
             });
             cp.on("close", close.as_ref());
-            self.callbacks.retain(close)?;
+            self.callbacks.retain(close.clone())?;
 
             let stdout = self.stdout.sender.clone();
             let data = callback!(move |data: buffer::Buffer| {
@@ -145,12 +147,13 @@ impl Inner {
             });
             cp.stdout().on("data", data.as_ref());
             self.callbacks.retain(data)?;
-            // }
+            
+            
             let r_exit = self.exit.receiver.recv();
             let r_stop = stop.recv();
             // join!(r_exit, r_stop).await?;
         log_info!("select!...");
-sleep(Duration::from_millis(5000)).await;
+// sleep(Duration::from_millis(5000)).await;
             select! {
                 v = r_exit.fuse() => {
 
@@ -201,6 +204,10 @@ pub struct Process {
     task: Arc<Task<Arc<Inner>, Result<()>>>, // monitor: Option<Arc<Task<(),()>>>
 }
 
+// pub struct Options {
+
+// }
+
 impl Process {
     pub fn new(
         // proc: String,
@@ -229,8 +236,8 @@ log_info!("creating process");
 
         let cp = child_process::spawn_with_args_and_options(&proc, &args, &options);
         let exit = self.inner.exit.sender.clone();
-        let close = callback!(move |code: u32, signal: String| {
-            exit.try_send((code, signal))
+        let close = callback!(move |code: u32| {
+            exit.try_send(code)
                 .expect("unable to send close notification");
         });
         cp.on("close", close.as_ref());
