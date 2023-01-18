@@ -68,16 +68,22 @@ pub async fn test() {
                 }
 
             }
+            log_info!("in loop");
+
         }
         // proc
     });
     task.run(proc.stdout()).expect("task.run()");
+    
 
     proc.run().expect("proc.run()");
 
     sleep(Duration::from_millis(10_000)).await;
 
     log_info!("### === STOPPING PROCESS ...");
+    task.stop_and_join()
+        .await
+        .expect("proc.stop_and_join() failure");
     proc.stop_and_join()
         .await
         .expect("proc.stop_and_join() failure");

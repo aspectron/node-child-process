@@ -1,4 +1,4 @@
-use crate::child_process::{self, ChildProcess};
+use crate::child_process::{self, ChildProcess, KillSignal};
 use crate::error::Error;
 use crate::result::Result;
 use futures::{select, FutureExt};
@@ -202,7 +202,7 @@ impl Process {
     pub fn new(options: &Options) -> Process {
         let inner = Arc::new(Inner::new(options));
 
-        let task = task!(|inner: Arc<Inner>, stop| async move { inner.run(stop).await });
+        let task = task!(|inner: Arc<Inner>, stop| async move { inner.run(stop).await; });
         log_info!("creating process");
         Process {
             inner,
@@ -290,7 +290,7 @@ impl Process {
         
         if let Some(proc) = self.inner.proc.lock().unwrap().as_ref() {
             log_info!("kill");
-            proc.kill();
+            proc.kill_with_signal(KillSignal::Message("SIGKILL".to_string()));
         } else {
             log_info!("no proc");
             return Err(Error::ProcIsAbsent);
