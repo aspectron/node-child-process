@@ -1,13 +1,10 @@
 use crate::child_process::{self, ChildProcess};
 use crate::error::Error;
 use crate::result::Result;
-// use crate::task::Task;
-// use futures::Future;
+use futures::{select, FutureExt};
 use node_sys::*;
 use std::path::PathBuf;
-// use std::pin::Pin;
-use futures::{join, select, FutureExt};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use workflow_core::channel::{Channel, Receiver};
@@ -42,37 +39,61 @@ impl Version {
     }
 }
 
+pub struct Options {
+    argv: Vec<String>,
+    cwd: Option<PathBuf>,
+    folder: Option<PathBuf>,
+    restart: bool,
+    delay: u64,
+    // env : HashMap<String, String>,
+}
+
+impl Options {
+    pub fn new(
+        argv: &[&str],
+        cwd: Option<PathBuf>,
+        folder: Option<PathBuf>,
+        restart: bool,
+        delay: Option<u64>,
+    ) -> Options {
+        let argv = argv.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+
+        Options {
+            argv,
+            cwd,
+            folder,
+            restart,
+            delay: delay.unwrap_or(3000),
+        }
+    }
+}
+
 struct Inner {
     argv: Mutex<Vec<String>>,
     cwd: Mutex<Option<PathBuf>>,
-    folder: Mutex<Option<PathBuf>>,
     running: AtomicBool,
     restart: AtomicBool,
     delay: AtomicU64,
-    // pid: AtomicU64,
     stdout: Channel<String>,
-    // exit: Channel<(u32, String)>,
+    stderr: Channel<String>,
     exit: Channel<u32>,
     proc: Arc<Mutex<Option<ChildProcess>>>,
     callbacks: CallbackMap,
 }
 
 impl Inner {
-    pub fn new(argv: &[&str]) -> Inner {
-        let argv = argv.iter().map(|s|s.to_string()).collect::<Vec<_>>();
+    pub fn new(options: &Options) -> Inner {
         Inner {
-            // proc,
-            argv: Mutex::new(argv),
-            cwd: Mutex::new(None),
-            folder: Mutex::new(None),
+            argv: Mutex::new(options.argv.clone()),
+            cwd: Mutex::new(options.cwd.clone()),
             running: AtomicBool::new(false),
-            restart: AtomicBool::new(false),
-            delay: AtomicU64::new(0),
+            restart: AtomicBool::new(options.restart),
+            delay: AtomicU64::new(options.delay),
             stdout: Channel::unbounded(),
+            stderr: Channel::unbounded(),
             exit: Channel::oneshot(),
             proc: Arc::new(Mutex::new(None)),
             callbacks: CallbackMap::new(),
-            // monitor: Mutex::new(None),
         }
     }
 
@@ -88,13 +109,8 @@ impl Inner {
         self.cwd.lock().unwrap().clone()
     }
 
-    fn folder(&self) -> Option<PathBuf> {
-        self.folder.lock().unwrap().clone()
-    }
-
     pub async fn run(&self, stop: Receiver<()>) -> Result<()> {
         loop {
-
             log_info!("loop...");
 
             if self.running.load(Ordering::SeqCst) {
@@ -105,57 +121,48 @@ impl Inner {
                 let proc = self.proc();
                 let args = &self.args();
 
-                log_info!("proc: {:?}",proc);
-                log_info!("args: {:?}",args);
-
-
                 let args: child_process::SpawnArgs = args.as_slice().into();
                 let options = child_process::SpawnOptions::new();
                 if let Some(cwd) = &self.cwd() {
-                    log_info!("cwd: {:?}", cwd);
-
-                    options.cwd(cwd.as_os_str().to_str().expect(&format!(
-                        "Process::exec_with_args(): invalid path: {}",
-                        cwd.display()
-                    )));
+                    options.cwd(cwd.as_os_str().to_str().unwrap_or_else(|| {
+                        panic!("Process::exec_with_args(): invalid path: {}", cwd.display())
+                    }));
                 }
 
-                log_info!("spawn...");
                 child_process::spawn_with_args_and_options(&proc, &args, &options)
             };
 
-            log_info!("cp ready");
-
             let exit = self.exit.sender.clone();
-            // let close = callback!(move |code: u32, signal: String| {
             let close = callback!(move |code: u32| {
-                log_info!("close callback()...");
-
                 exit.try_send(code)
                     .expect("unable to send close notification");
             });
             cp.on("close", close.as_ref());
             self.callbacks.retain(close.clone())?;
 
-            let stdout = self.stdout.sender.clone();
-            let data = callback!(move |data: buffer::Buffer| {
-                log_info!("data callback()... {:?}", data);
-                stdout
+            let stdout_tx = self.stdout.sender.clone();
+            let stdout_cb = callback!(move |data: buffer::Buffer| {
+                stdout_tx
                     .try_send(String::from(data.to_string(None, None, None)))
                     .unwrap();
-                log_info!("data callback done");
             });
-            cp.stdout().on("data", data.as_ref());
-            self.callbacks.retain(data)?;
-            
-            
-            let r_exit = self.exit.receiver.recv();
-            let r_stop = stop.recv();
-            // join!(r_exit, r_stop).await?;
-        log_info!("select!...");
-// sleep(Duration::from_millis(5000)).await;
+            cp.stdout().on("data", stdout_cb.as_ref());
+            self.callbacks.retain(stdout_cb)?;
+
+            let stderr_tx = self.stderr.sender.clone();
+            let stderr_cb = callback!(move |data: buffer::Buffer| {
+                stderr_tx
+                    .try_send(String::from(data.to_string(None, None, None)))
+                    .unwrap();
+            });
+            cp.stderr().on("data", stderr_cb.as_ref());
+            self.callbacks.retain(stderr_cb)?;
+
+            *self.proc.lock().unwrap() = Some(cp);
+            self.running.store(true,Ordering::SeqCst);
+
             select! {
-                v = r_exit.fuse() => {
+                v = self.exit.receiver.recv().fuse() => {
 
                     log_info!("exit: {:?}",v);
 
@@ -169,7 +176,7 @@ impl Inner {
                     }
 
                 },
-                v = r_stop.fuse() => {
+                v = stop.recv().fuse() => {
                     log_info!("stop: {:?}",v);
 
                 }
@@ -178,49 +185,37 @@ impl Inner {
         log_info!("loop done...");
 
         self.callbacks.clear();
-        // TODO - WAIT ON STOP OR EXIT
-
-        // self.monitor.run(())?;
-        // self.exit
-        //     .recv()
-        //     .await
-        //     .expect("error receiving close notification");
-
-        // let s = self.stdout.iter().collect::<Vec<_>>().join("");
-
-        // let mut s = String::new();
-        // for _ in 0..self.stdout.len() {
-        //     s.push_str(&self.stdout.try_recv()?);
-        // }
+        *self.proc.lock().unwrap() = None;
+        self.running.store(false,Ordering::SeqCst);
 
         Ok(())
     }
 }
 
+#[derive(Clone)]
 pub struct Process {
-    // proc: String,
-    // monitor1 : Arc<GenericTask>,
     inner: Arc<Inner>,
-    task: Arc<Task<Arc<Inner>, Result<()>>>, // monitor: Option<Arc<Task<(),()>>>
+    task: Arc<Task<Arc<Inner>, ()>>,
 }
 
-// pub struct Options {
-
-// }
-
 impl Process {
-    pub fn new(
-        // proc: String,
-        args: &[&str],
-    ) -> Process {
-        let inner = Arc::new(Inner::new(args));
+    pub fn new(options: &Options) -> Process {
+        let inner = Arc::new(Inner::new(options));
 
         let task = task!(|inner: Arc<Inner>, stop| async move { inner.run(stop).await });
-log_info!("creating process");
+        log_info!("creating process");
         Process {
             inner,
             task: Arc::new(task),
         }
+    }
+
+    pub fn stdout(&self) -> Receiver<String> {
+        self.inner.stdout.receiver.clone()
+    }
+
+    pub fn stderr(&self) -> Receiver<String> {
+        self.inner.stderr.receiver.clone()
     }
 
     pub async fn exec_with_args(&self, args: &[&str], cwd: Option<PathBuf>) -> Result<String> {
@@ -228,10 +223,9 @@ log_info!("creating process");
         let args: child_process::SpawnArgs = args.into();
         let options = child_process::SpawnOptions::new();
         if let Some(cwd) = cwd {
-            options.cwd(cwd.as_os_str().to_str().expect(&format!(
-                "Process::exec_with_args(): invalid path: {}",
-                cwd.display()
-            )));
+            options.cwd(cwd.as_os_str().to_str().unwrap_or_else(|| {
+                panic!("Process::exec_with_args(): invalid path: {}", cwd.display())
+            }));
         }
 
         let cp = child_process::spawn_with_args_and_options(&proc, &args, &options);
@@ -242,19 +236,19 @@ log_info!("creating process");
         });
         cp.on("close", close.as_ref());
 
-        let stdout = self.inner.stdout.sender.clone();
-        let data = callback!(move |data: buffer::Buffer| {
-            stdout.try_send(String::from(data.to_string(None, None, None)));
+        let stdout_tx = self.inner.stdout.sender.clone();
+        let stdout_cb = callback!(move |data: buffer::Buffer| {
+            stdout_tx
+                .try_send(String::from(data.to_string(None, None, None)))
+                .expect("unable to send stdout data");
         });
-        cp.stdout().on("data", data.as_ref());
+        cp.stdout().on("data", stdout_cb.as_ref());
 
         self.inner
             .exit
             .recv()
             .await
             .expect("error receiving close notification");
-
-        // let s = self.stdout.iter().collect::<Vec<_>>().join("");
 
         let mut s = String::new();
         for _ in 0..self.inner.stdout.len() {
@@ -266,9 +260,8 @@ log_info!("creating process");
     pub async fn get_version(&self) -> Result<Version> {
         let text = self.exec_with_args(["--version"].as_slice(), None).await?;
         let v = text
-            .split(".")
-            .map(|v| v.parse::<u64>())
-            .flatten()
+            .split('.')
+            .flat_map(|v| v.parse::<u64>())
             .collect::<Vec<_>>();
 
         if v.len() != 3 {
@@ -285,7 +278,38 @@ log_info!("creating process");
         Ok(())
     }
 
-    // async fn monitor(&self) {
+    pub fn stop(&self) -> Result<()> {
+        log_info!("running.load");
+        if !self.inner.running.load(Ordering::SeqCst) {
+            return Err(Error::NotRunning);
+        }
+        
+        log_info!("running.restart store");
+        self.inner.restart.store(false, Ordering::SeqCst);
+        log_info!("last");
+        
+        if let Some(proc) = self.inner.proc.lock().unwrap().as_ref() {
+            log_info!("kill");
+            proc.kill();
+        } else {
+            log_info!("no proc");
+            return Err(Error::ProcIsAbsent);
+        }
+        log_info!("stop is done");
+        
+        Ok(())
+    }
 
-    // }
+    pub async fn join(&self) -> Result<()> {
+        self.task.join().await?;
+        Ok(())
+    }
+
+    pub async fn stop_and_join(&self) -> Result<()> {
+        log_info!("calling stop();");
+        self.stop()?;
+        log_info!("calling join();");
+        self.join().await?;
+        Ok(())
+    }
 }

@@ -7,16 +7,18 @@ pub enum Error {
     AlreadyRunning,
     #[error("The task is not running")]
     NotRunning,
+    #[error("Child process reference is absent")]
+    ProcIsAbsent,
     #[error("{0:?}")]
-    SendError(String),
+    Send(String),
     #[error("{0:?}")]
-    RecvError(#[from] RecvError),
+    Recv(#[from] RecvError),
     #[error("{0:?}")]
-    TryRecvError(#[from] TryRecvError),
+    TryRecv(#[from] TryRecvError),
     #[error(transparent)]
-    TaskError(#[from] workflow_core::task::TaskError),
+    Task(#[from] workflow_core::task::TaskError),
     #[error(transparent)]
-    CallbackError(#[from] workflow_wasm::callback::CallbackError),
+    Callback(#[from] workflow_wasm::callback::CallbackError),
 }
 
 unsafe impl Send for Error {}
@@ -24,6 +26,6 @@ unsafe impl Sync for Error {}
 
 impl<T> From<SendError<T>> for Error {
     fn from(err: SendError<T>) -> Self {
-        Error::SendError(err.to_string())
+        Error::Send(err.to_string())
     }
 }

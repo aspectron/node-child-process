@@ -75,10 +75,8 @@ impl ChildProcess {
 impl From<Vec<&str>> for SpawnArgs {
     fn from(list: Vec<&str>) -> Self {
         let array = Array::new();
-        let mut index = 0;
-        for value in list {
-            array.set(index, JsValue::from(value));
-            index += 1;
+        for (index, value) in list.iter().enumerate() {
+            array.set(index as u32, JsValue::from(*value));
         }
 
         #[allow(unused_mut)]
@@ -90,10 +88,8 @@ impl From<Vec<&str>> for SpawnArgs {
 impl From<&[&str]> for SpawnArgs {
     fn from(list: &[&str]) -> Self {
         let array = Array::new();
-        let mut index = 0;
-        for value in list.iter() {
-            array.set(index, JsValue::from(*value));
-            index += 1;
+        for (index, value) in list.iter().enumerate() {
+            array.set(index as u32, JsValue::from(*value));
         }
 
         #[allow(unused_mut)]
@@ -105,15 +101,19 @@ impl From<&[&str]> for SpawnArgs {
 impl From<&[String]> for SpawnArgs {
     fn from(list: &[String]) -> Self {
         let array = Array::new();
-        let mut index = 0;
-        for value in list.iter() {
-            array.set(index, JsValue::from(value));
-            index += 1;
+        for (index, value) in list.iter().enumerate() {
+            array.set(index as u32, JsValue::from(value));
         }
 
         #[allow(unused_mut)]
         let mut args: Self = ::wasm_bindgen::JsCast::unchecked_into(array);
         args
+    }
+}
+
+impl Default for SpawnOptions {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

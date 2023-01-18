@@ -2,20 +2,20 @@ mod error;
 mod process;
 mod result;
 
-use process::Process;
-// use std::future::Future;
-// use std::sync::Arc;
-// use std::time::Duration;
+use std::time::Duration;
 
-use node_sys::*;
+use futures::{select, FutureExt};
+use process::{Options, Process};
+
+// use node_sys::*;
 use wasm_bindgen::prelude::*;
-// use wasm_bindgen::JsCast;
 use workflow_log::*;
 pub mod child_process;
 pub use child_process::{spawn, spawn_with_args, spawn_with_args_and_options};
-use workflow_wasm::callback::*;
-// use workflow_core::channel::oneshot;
-use workflow_core::channel::*;
+use workflow_core::{
+    channel::*,
+    task::{sleep, task},
+};
 #[wasm_bindgen]
 extern "C" {
     #[wasm_bindgen]
@@ -36,18 +36,51 @@ pub fn add(left: usize, right: usize) -> usize {
 #[wasm_bindgen]
 pub async fn test() {
     log_info!("running rust test() fn");
-    // workflow_wasm::panic::init_console_panic_hook();
+    workflow_wasm::panic::init_console_panic_hook();
     //log_info!("process.pid:{:?}", process.pid());
     //let id = process.get_uid();
     //log_info!("process.get_gid(): id:{}, {:?}", id, process.get_gid());
     //process.kill(id.try_into().unwrap());
 
-    let proc = Process::new(&["ls","-m","-s"]);
+    let proc = Process::new(&Options::new(
+        // &["ls", "-m", "-s"],
+        // &["/Users/aspect/dev/kaspa-dev/kaspad"],
+        &["/Users/aspect/dev/kaspa-dev/kaspad/kaspad"],
+        None,
+        None,
+        true,
+        Some(3000),
+    ));
+    // futures::task
+    let task = task!(|stdout: Receiver<String>, stop: Receiver<()>| async move {
+        loop {
+            select! {
+                v = stdout.recv().fuse() => {
+                    if let Ok(v) = v {
+                        log_info!("| {}",v);
+                    }
+                },
+                _ = stop.recv().fuse() => {
+                    // if let Ok(v) = v {
+                        log_info!("stop...");
+                        break;
+                    // }
+                }
 
+            }
+        }
+        // proc
+    });
+    task.run(proc.stdout()).expect("task.run()");
 
-    proc.run();
+    proc.run().expect("proc.run()");
 
+    sleep(Duration::from_millis(10_000)).await;
 
+    log_info!("### === STOPPING PROCESS ...");
+    proc.stop_and_join()
+        .await
+        .expect("proc.stop_and_join() failure");
     // let args: child_process::SpawnArgs = ["-m", "-s"].as_slice().into(); // = child_process::SpawnArgs::from(&["-m", "-s"]);
     //                                                                      // let args = child_process::SpawnArgs::from(["-m", "-s"].as_slice());
     // let options = child_process::SpawnOptions::new();
