@@ -1,4 +1,4 @@
 ## `node-child-process`
 
-`wasm_bindgen` bindings for NodeJS [ChildProcess](https://nodejs.org/api/child_process.html)
+Node.js `wasm_bindgen` bindings for [ChildProcess](https://nodejs.org/api/child_process.html) API
 
