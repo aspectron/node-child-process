@@ -81,10 +81,10 @@ pub async fn test() {
     sleep(Duration::from_millis(10_000)).await;
 
     log_info!("### === STOPPING PROCESS ...");
-    task.stop_and_join()
+    proc.stop_and_join()
         .await
         .expect("proc.stop_and_join() failure");
-    proc.stop_and_join()
+    task.stop_and_join()
         .await
         .expect("proc.stop_and_join() failure");
     // let args: child_process::SpawnArgs = ["-m", "-s"].as_slice().into(); // = child_process::SpawnArgs::from(&["-m", "-s"]);

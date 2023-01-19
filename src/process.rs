@@ -290,7 +290,9 @@ impl Process {
         
         if let Some(proc) = self.inner.proc.lock().unwrap().as_ref() {
             log_info!("kill");
-            proc.kill_with_signal(KillSignal::Message("SIGKILL".to_string()));
+            // proc.kill();
+            // proc.kill_with_signal(KillSignal::Message("SIGKILL".to_string()));
+            proc.kill_with_signal(KillSignal::Message("SIGTERM".to_string()));
         } else {
             log_info!("no proc");
             return Err(Error::ProcIsAbsent);
