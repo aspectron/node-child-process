@@ -1,6 +1,6 @@
 [package]
 name = "node-child-process"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/aspectron/node-child-process"
@@ -10,8 +10,6 @@ categories = ["wasm","api-bindings"]
 description = """
 Node.js wasm_bindgen bindings for ChildProcess API
 """
-
-
 
 [dependencies]
 js-sys = "0.3.60"
