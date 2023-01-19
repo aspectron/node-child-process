@@ -11,8 +11,7 @@ description = """
 Node.js wasm_bindgen bindings for ChildProcess API
 """
 
-[lib]
-crate-type = ["cdylib"]
+
 
 [dependencies]
 js-sys = "0.3.60"
