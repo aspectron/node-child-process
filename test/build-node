@@ -1,1 +1,0 @@
-wasm-pack build --target nodejs --out-name node-process --out-dir test
