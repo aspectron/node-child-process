@@ -4,7 +4,7 @@ use crate::result::Result;
 use futures::{select, FutureExt};
 use node_sys::*;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use workflow_core::channel::{Channel, Receiver};
@@ -39,12 +39,23 @@ impl Version {
     }
 }
 
+pub struct ExecutionResult {
+    pub exit_code: u32,
+    pub stdout: String,
+    pub stderr: String,
+}
+
 pub struct Options {
+    /// process arguments (first element is a process name)
     argv: Vec<String>,
+    /// current working directory
     cwd: Option<PathBuf>,
-    folder: Option<PathBuf>,
+    /// restart on exit
     restart: bool,
-    delay: u64,
+    /// delay
+    restart_delay: Duration,
+    use_force: bool,
+    use_force_delay: Duration,
     // env : HashMap<String, String>,
 }
 
@@ -52,18 +63,33 @@ impl Options {
     pub fn new(
         argv: &[&str],
         cwd: Option<PathBuf>,
-        folder: Option<PathBuf>,
         restart: bool,
-        delay: Option<u64>,
+        restart_delay: Option<Duration>,
+        use_force: bool,
+        use_force_delay: Option<Duration>,
     ) -> Options {
         let argv = argv.iter().map(|s| s.to_string()).collect::<Vec<_>>();
 
         Options {
             argv,
             cwd,
-            folder,
             restart,
-            delay: delay.unwrap_or(3000),
+            restart_delay: restart_delay.unwrap_or_default(),
+            use_force,
+            use_force_delay: use_force_delay.unwrap_or(Duration::from_millis(10_000)),
+        }
+    }
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            argv: Vec::new(),
+            cwd: None,
+            restart: true,
+            restart_delay: Duration::default(),
+            use_force: false,
+            use_force_delay: Duration::from_millis(10_000),
         }
     }
 }
@@ -73,11 +99,13 @@ struct Inner {
     cwd: Mutex<Option<PathBuf>>,
     running: AtomicBool,
     restart: AtomicBool,
-    delay: AtomicU64,
+    restart_delay: Mutex<Duration>,
+    use_force: AtomicBool,
+    use_force_delay: Mutex<Duration>,
     stdout: Channel<String>,
     stderr: Channel<String>,
     exit: Channel<u32>,
-    proc: Arc<Mutex<Option<ChildProcess>>>,
+    proc: Arc<Mutex<Option<Arc<ChildProcess>>>>,
     callbacks: CallbackMap,
 }
 
@@ -88,7 +116,9 @@ impl Inner {
             cwd: Mutex::new(options.cwd.clone()),
             running: AtomicBool::new(false),
             restart: AtomicBool::new(options.restart),
-            delay: AtomicU64::new(options.delay),
+            restart_delay: Mutex::new(options.restart_delay),
+            use_force: AtomicBool::new(options.use_force),
+            use_force_delay: Mutex::new(options.use_force_delay),
             stdout: Channel::unbounded(),
             stderr: Channel::unbounded(),
             exit: Channel::oneshot(),
@@ -97,7 +127,7 @@ impl Inner {
         }
     }
 
-    fn proc(&self) -> String {
+    fn program(&self) -> String {
         self.argv.lock().unwrap().get(0).unwrap().clone()
     }
 
@@ -111,14 +141,12 @@ impl Inner {
 
     pub async fn run(&self, stop: Receiver<()>) -> Result<()> {
         loop {
-            log_info!("loop...");
-
             if self.running.load(Ordering::SeqCst) {
                 return Err(Error::AlreadyRunning);
             }
 
-            let cp = {
-                let proc = self.proc();
+            let proc = {
+                let program = self.program();
                 let args = &self.args();
 
                 let args: child_process::SpawnArgs = args.as_slice().into();
@@ -129,7 +157,9 @@ impl Inner {
                     }));
                 }
 
-                child_process::spawn_with_args_and_options(&proc, &args, &options)
+                Arc::new(child_process::spawn_with_args_and_options(
+                    &program, &args, &options,
+                ))
             };
 
             let exit = self.exit.sender.clone();
@@ -137,7 +167,7 @@ impl Inner {
                 exit.try_send(code)
                     .expect("unable to send close notification");
             });
-            cp.on("close", close.as_ref());
+            proc.on("close", close.as_ref());
             self.callbacks.retain(close.clone())?;
 
             let stdout_tx = self.stdout.sender.clone();
@@ -146,7 +176,7 @@ impl Inner {
                     .try_send(String::from(data.to_string(None, None, None)))
                     .unwrap();
             });
-            cp.stdout().on("data", stdout_cb.as_ref());
+            proc.stdout().on("data", stdout_cb.as_ref());
             self.callbacks.retain(stdout_cb)?;
 
             let stderr_tx = self.stderr.sender.clone();
@@ -155,30 +185,51 @@ impl Inner {
                     .try_send(String::from(data.to_string(None, None, None)))
                     .unwrap();
             });
-            cp.stderr().on("data", stderr_cb.as_ref());
+            proc.stderr().on("data", stderr_cb.as_ref());
             self.callbacks.retain(stderr_cb)?;
 
-            *self.proc.lock().unwrap() = Some(cp);
-            self.running.store(true,Ordering::SeqCst);
+            *self.proc.lock().unwrap() = Some(proc.clone());
+            self.running.store(true, Ordering::SeqCst);
 
-            select! {
-                v = self.exit.receiver.recv().fuse() => {
-
-                    log_info!("exit: {:?}",v);
-
+            let kill = select! {
+                _ = self.exit.receiver.recv().fuse() => {
                     if !self.restart.load(Ordering::SeqCst) {
-                        log_info!("terminating (no restart)");
                         break;
                     } else {
-                        let delay = self.delay.load(Ordering::SeqCst);
-                        log_info!("restarting in {}",delay);
-                        sleep(Duration::from_millis(delay)).await;
+                        let restart_delay = *self.restart_delay.lock().unwrap();
+                        select! {
+                            _ = sleep(restart_delay).fuse() => {
+                                false
+                            },
+                            _ = stop.recv().fuse() => {
+                                true
+                            }
+                        }
                     }
-
                 },
-                v = stop.recv().fuse() => {
-                    log_info!("stop: {:?}",v);
+                // manual shutdown
+                _ = stop.recv().fuse() => {
+                    true
+                }
+            };
 
+            if kill && self.running.load(Ordering::SeqCst) {
+                self.restart.store(false, Ordering::SeqCst);
+                proc.kill_with_signal(KillSignal::SIGTERM);
+                if !self.use_force.load(Ordering::SeqCst) {
+                    self.exit.receiver.recv().await?;
+                } else {
+                    let use_force_delay = sleep(*self.use_force_delay.lock().unwrap());
+                    select! {
+                        _ = self.exit.receiver.recv().fuse() => {
+                            break;
+                        },
+                        _ = use_force_delay.fuse() => {
+                            proc.kill_with_signal(KillSignal::SIGKILL);
+                            self.exit.receiver.recv().await?;
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -186,7 +237,7 @@ impl Inner {
 
         self.callbacks.clear();
         *self.proc.lock().unwrap() = None;
-        self.running.store(false,Ordering::SeqCst);
+        self.running.store(false, Ordering::SeqCst);
 
         Ok(())
     }
@@ -202,7 +253,9 @@ impl Process {
     pub fn new(options: &Options) -> Process {
         let inner = Arc::new(Inner::new(options));
 
-        let task = task!(|inner: Arc<Inner>, stop| async move { inner.run(stop).await; });
+        let task = task!(|inner: Arc<Inner>, stop| async move {
+            inner.run(stop).await.ok();
+        });
         log_info!("creating process");
         Process {
             inner,
@@ -218,8 +271,72 @@ impl Process {
         self.inner.stderr.receiver.clone()
     }
 
-    pub async fn exec_with_args(&self, args: &[&str], cwd: Option<PathBuf>) -> Result<String> {
-        let proc = self.inner.proc();
+    pub fn run(&self) -> Result<()> {
+        log_info!("run...");
+        self.task.run(self.inner.clone())?;
+        log_info!("run done...");
+        Ok(())
+    }
+
+    pub fn kill(&self) -> Result<()> {
+        if !self.inner.running.load(Ordering::SeqCst) {
+            Err(Error::NotRunning)
+        } else if let Some(proc) = self.inner.proc.lock().unwrap().as_ref() {
+            self.inner.restart.store(false, Ordering::SeqCst);
+            proc.kill_with_signal(KillSignal::SIGKILL);
+            Ok(())
+        } else {
+            Err(Error::ProcIsAbsent)
+        }
+    }
+
+    pub fn restart(&self) -> Result<()> {
+        if !self.inner.running.load(Ordering::SeqCst) {
+            Err(Error::NotRunning)
+        } else if let Some(proc) = self.inner.proc.lock().unwrap().as_ref() {
+            proc.kill_with_signal(KillSignal::SIGTERM);
+            Ok(())
+        } else {
+            Err(Error::ProcIsAbsent)
+        }
+    }
+
+    pub fn stop(&self) -> Result<()> {
+        log_info!("running.load");
+        if !self.inner.running.load(Ordering::SeqCst) {
+            return Err(Error::NotRunning);
+        }
+
+        log_info!("running.restart store");
+        self.inner.restart.store(false, Ordering::SeqCst);
+        log_info!("last");
+
+        log_info!("kill");
+        self.task.stop()?;
+        log_info!("stop is done");
+
+        Ok(())
+    }
+
+    pub async fn join(&self) -> Result<()> {
+        self.task.join().await?;
+        Ok(())
+    }
+
+    pub async fn stop_and_join(&self) -> Result<()> {
+        log_info!("calling stop();");
+        self.stop()?;
+        log_info!("calling join();");
+        self.join().await?;
+        Ok(())
+    }
+
+    pub async fn exec_with_args(
+        &self,
+        args: &[&str],
+        cwd: Option<PathBuf>,
+    ) -> Result<ExecutionResult> {
+        let proc = self.inner.program();
         let args: child_process::SpawnArgs = args.into();
         let options = child_process::SpawnOptions::new();
         if let Some(cwd) = cwd {
@@ -244,21 +361,35 @@ impl Process {
         });
         cp.stdout().on("data", stdout_cb.as_ref());
 
-        self.inner
-            .exit
-            .recv()
-            .await
-            .expect("error receiving close notification");
+        let stderr_tx = self.inner.stderr.sender.clone();
+        let stderr_cb = callback!(move |data: buffer::Buffer| {
+            stderr_tx
+                .try_send(String::from(data.to_string(None, None, None)))
+                .expect("unable to send stderr data");
+        });
+        cp.stderr().on("data", stderr_cb.as_ref());
 
-        let mut s = String::new();
+        let exit_code = self.inner.exit.recv().await?;
+
+        let mut stdout = String::new();
         for _ in 0..self.inner.stdout.len() {
-            s.push_str(&self.inner.stdout.try_recv()?);
+            stdout.push_str(&self.inner.stdout.try_recv()?);
         }
-        Ok(s)
+
+        let mut stderr = String::new();
+        for _ in 0..self.inner.stderr.len() {
+            stderr.push_str(&self.inner.stderr.try_recv()?);
+        }
+
+        Ok(ExecutionResult {
+            exit_code,
+            stdout,
+            stderr,
+        })
     }
 
     pub async fn get_version(&self) -> Result<Version> {
-        let text = self.exec_with_args(["--version"].as_slice(), None).await?;
+        let text = self.exec_with_args(["--version"].as_slice(), None).await?.stdout;
         let v = text
             .split('.')
             .flat_map(|v| v.parse::<u64>())
@@ -269,49 +400,5 @@ impl Process {
         }
 
         Ok(Version::new(v[0], v[1], v[2]))
-    }
-
-    pub fn run(&self) -> Result<()> {
-        log_info!("run...");
-        self.task.run(self.inner.clone())?;
-        log_info!("run done...");
-        Ok(())
-    }
-
-    pub fn stop(&self) -> Result<()> {
-        log_info!("running.load");
-        if !self.inner.running.load(Ordering::SeqCst) {
-            return Err(Error::NotRunning);
-        }
-        
-        log_info!("running.restart store");
-        self.inner.restart.store(false, Ordering::SeqCst);
-        log_info!("last");
-        
-        if let Some(proc) = self.inner.proc.lock().unwrap().as_ref() {
-            log_info!("kill");
-            // proc.kill();
-            // proc.kill_with_signal(KillSignal::Message("SIGKILL".to_string()));
-            proc.kill_with_signal(KillSignal::Message("SIGTERM".to_string()));
-        } else {
-            log_info!("no proc");
-            return Err(Error::ProcIsAbsent);
-        }
-        log_info!("stop is done");
-        
-        Ok(())
-    }
-
-    pub async fn join(&self) -> Result<()> {
-        self.task.join().await?;
-        Ok(())
-    }
-
-    pub async fn stop_and_join(&self) -> Result<()> {
-        log_info!("calling stop();");
-        self.stop()?;
-        log_info!("calling join();");
-        self.join().await?;
-        Ok(())
     }
 }

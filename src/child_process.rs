@@ -1,6 +1,4 @@
 use node_sys::*;
-//use node_sys::{stream, EventEmitter};
-//use js_sys::{Function, JsString, Number, Object, Set};
 use js_sys::{Array, Object};
 use wasm_bindgen::prelude::*;
 
@@ -56,9 +54,11 @@ extern "C" {
 unsafe impl Send for ChildProcess {}
 unsafe impl Sync for ChildProcess {}
 
-pub enum KillSignal {
+pub enum KillSignal<'s> {
     None,
-    Message(String),
+    SIGKILL,
+    SIGTERM,
+    Message(&'s str),
     Code(u32),
 }
 
@@ -66,6 +66,8 @@ impl ChildProcess {
     pub fn kill_with_signal(self: &ChildProcess, signal: KillSignal) -> bool {
         match signal {
             KillSignal::None => self.kill(),
+            KillSignal::SIGKILL => self.kill_with_signal_impl(JsValue::from("SIGKILL")),
+            KillSignal::SIGTERM => self.kill_with_signal_impl(JsValue::from("SIGTERM")),
             KillSignal::Message(str) => self.kill_with_signal_impl(JsValue::from(str)),
             KillSignal::Code(code) => self.kill_with_signal_impl(JsValue::from(code)),
         }
@@ -185,7 +187,7 @@ impl SpawnOptions {
         self.set("timeout", JsValue::from(timeout))
     }
 
-    //TODO: AbortSignal
+    // TODO: AbortSignal
 
     pub fn kill_signal(&self, signal: u32) -> &Self {
         self.set("killSignal", JsValue::from(signal))
